@@ -1,0 +1,131 @@
+#!/bin/bash
+
+# Cd into our working directory in case we're not into it already
+cd "$(dirname "$0")";
+
+echo "-----------------------------------------------------------------------------------------"
+echo "meps: Starting processing of MEPS model data - `date`"
+echo "-----------------------------------------------------------------------------------------"
+
+# Folder to be used to download and process data
+export MODEL_DATA_FOLDER="/home/ekman/ssd/guido/meps"
+export HOME_FOLDER=$(pwd)
+export NCFTP_BOOKMARK="mid"
+DATA_PLOTTING=true
+DATA_UPLOAD=true
+
+##### LOAD functions to download model data
+export SHELL=$(type -p bash)
+# We need to open many files at the same time
+ulimit -Sn 4096
+########################################### 
+
+##### Retrieve run
+export MONTH=$(date -u +"%m")
+export DAY=$(date -u +"%d")
+export YEAR=$(date -u +"%Y")
+export HOUR=$(date -u +"%H")
+
+if [ $HOUR -ge 3 ] && [ $HOUR -lt 6 ]
+then
+    export RUN=00
+elif [ $HOUR -ge 6 ] && [ $HOUR -lt 9 ]
+then
+    export RUN=03
+elif [ $HOUR -ge 9 ] && [ $HOUR -lt 12 ]
+then
+    export RUN=06
+elif [ $HOUR -ge 12 ] && [ $HOUR -lt 15 ]
+then
+    export RUN=09
+elif [ $HOUR -ge 15 ] && [ $HOUR -lt 18 ]
+then
+    export RUN=12
+elif [ $HOUR -ge 18 ] && [ $HOUR -lt 21 ]
+then
+    export RUN=15
+elif [ $HOUR -ge 21 ] && [ $HOUR -le 23 ]
+then
+    export RUN=18
+elif [ $HOUR -gt 0 ] && [ $HOUR -lt 3 ]
+then
+	DAY=$(date -u -d'yesterday' +"%d")
+    export RUN=21
+else
+    echo "Invalid hour!"
+fi
+
+export DATE_RUN="${YEAR}${MONTH}${DAY}T${RUN}Z"
+
+echo "----------------------------------------------------------------------------------------------"
+echo "MEPS: run ${DATE_RUN}"
+echo "----------------------------------------------------------------------------------------------"
+
+###########################################
+
+mkdir -p ${MODEL_DATA_FOLDER}/nord
+# Move to the data folder to do processing
+cd ${MODEL_DATA_FOLDER} || { echo 'Cannot change to DATA folder' ; exit 1; }
+
+# SECTION 1 - DATA PLOTTING ############################################################
+
+if [ "$DATA_PLOTTING" = true ]; then
+	echo "-----------------------------------------------------------------------------------------"
+	echo "meps: Starting plotting of data - `date`"
+	echo "-----------------------------------------------------------------------------------------"
+	python --version
+	cp ${HOME_FOLDER}/plotting/*.py ${MODEL_DATA_FOLDER}/
+
+	export QT_QPA_PLATFORM=offscreen # Needed to avoid errors when using Python without display
+
+	scripts=("plot_hsnow.py" "plot_pres_t2m_winds10m.py" "plot_rain_clouds.py" "plot_winds10m.py" "plot_winter.py" "plot_tmax.py" "plot_tmin.py")
+
+	projections=("scandinavia" "nord")
+
+	parallel -j 3 --delay 1 python ::: "${scripts[@]}" ::: "${projections[@]}"
+	rm ${MODEL_DATA_FOLDER}/*.py
+fi
+
+# SECTION 3 - IMAGES UPLOAD ############################################################
+# Use ncftpbookmarks to add a new FTP server with credentials
+if [ "$DATA_UPLOAD" = true ]; then
+	echo "-----------------------------------------------------------------------------------------"
+	echo "meps: Starting FTP uploading - `date`"
+	echo "-----------------------------------------------------------------------------------------"
+	#
+	images_output=("t_v_pres" "precip_clouds" "hsnow" "winds10m" "winter" "tmax" "tmin")
+
+	# suffix for naming
+	projections_output=("" "nord/")
+	# remote folder on server
+	projections_output_folder=("meps" "meps/nord")
+
+	# Create a lisf of all the images to upload 
+	upload_elements=()
+	for i in "${!projections_output[@]}"; do
+		for j in "${images_output[@]}"; do
+				upload_elements+=("${projections_output_folder[$i]}/${j} ./${projections_output[$i]}${j}_*.png")
+		done
+	done
+
+	num_procs=5
+	num_iters=${#upload_elements[@]}
+	num_jobs="\j"  # The prompt escape for number of jobs currently running
+	for ((i=0; i<num_iters; i++)); do
+		while (( ${num_jobs@P} >= num_procs )); do
+		wait -n
+		done
+	ncftpput -R -v -DD -m ${NCFTP_BOOKMARK} ${upload_elements[$i]} &
+	done
+
+fi 
+
+# SECTION 4 - CLEANING ############################################################
+
+echo "-----------------------------------------------------------------------------------------"
+echo "meps: Finished processing run ${DATE_RUN} - `date`"
+echo "-----------------------------------------------------------------------------------------"
+
+############################################################
+
+cd -
